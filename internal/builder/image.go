@@ -57,12 +57,12 @@ func (s *Service) BuildImage(jobID string, spec ImageSpec, contextTar io.Reader)
 	}
 
 	log.WriteString(fmt.Sprintf("==> push %s\n", engineTag))
-	if err := s.engine.Run(log, "push", engineTag); err != nil {
+	if err := s.engine.Push(log, engineTag); err != nil {
 		s.fail(jobID, log, fmt.Errorf("push: %w", err))
 		return
 	}
 
-	digest, err := s.engine.Digest(log, engineTag)
+	digest, err := s.engine.RegistryDigest(log, engineTag)
 	if err != nil {
 		s.fail(jobID, log, err)
 		return

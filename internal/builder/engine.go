@@ -38,6 +38,51 @@ func (e *Engine) Run(sink *strings.Builder, args ...string) error {
 
 func (e *Engine) Name() string { return e.bin }
 
+// Push uploads the built image to the registry. Zot is an OCI-only registry
+// (docker schema2 manifests are rejected with 415), so docker-engine builds
+// are pushed through skopeo, which converts to OCI on the wire; podman-built
+// images are already OCI and push natively.
+func (e *Engine) Push(sink *strings.Builder, tag string) error {
+	if skopeo, err := exec.LookPath("skopeo"); err == nil {
+		transport := "docker-daemon:"
+		if strings.HasSuffix(e.bin, "podman") {
+			transport = "containers-storage:"
+		}
+		cmd := exec.Command(skopeo, "copy", "--dest-tls-verify=false",
+			transport+tag, "docker://"+tag)
+		cmd.Stdout = sink
+		cmd.Stderr = sink
+		return cmd.Run()
+	}
+	if strings.HasSuffix(e.bin, "docker") {
+		return fmt.Errorf("skopeo is required to push with the docker engine (zot rejects schema2 manifests)")
+	}
+	return e.Run(sink, "push", tag)
+}
+
+// RegistryDigest reads the digest of a pushed image directly from the
+// registry (the engine's local RepoDigests may be absent for skopeo pushes).
+func (e *Engine) RegistryDigest(sink *strings.Builder, tag string) (string, error) {
+	out := &strings.Builder{}
+	cmd := exec.Command("skopeo", "inspect", "--tls-verify=false", "--format", "{{.Digest}}", "docker://"+tag)
+	cmd.Stdout = out
+	cmd.Stderr = sink
+	if err := cmd.Run(); err != nil {
+		sink.WriteString(out.String())
+		// fallback to the engine's own view (works after a native push)
+		digest, derr := e.Digest(sink, tag)
+		if derr != nil {
+			return "", fmt.Errorf("inspect digest: %w", err)
+		}
+		return digest, nil
+	}
+	digest := strings.TrimSpace(out.String())
+	if digest == "" {
+		return "", fmt.Errorf("empty digest reported for %s", tag)
+	}
+	return digest, nil
+}
+
 // Digest returns the repository digest of a pushed image tag.
 func (e *Engine) Digest(sink *strings.Builder, tag string) (string, error) {
 	out := &strings.Builder{}
