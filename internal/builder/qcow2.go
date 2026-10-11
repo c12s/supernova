@@ -16,6 +16,7 @@ type QCOW2Spec struct {
 	Name       string `json:"name"`        // artifact base name, e.g. "edge-base-v1.0"
 	ImageRef   string `json:"imageRef"`    // engine-reachable ref of the built bootc image
 	TargetArch string `json:"targetArch"`  // default x86_64
+	RootFS     string `json:"rootfs"`      // default ext4 (fedora-bootc declares no default)
 }
 
 // BuildQCOW2 runs bootc-image-builder (privileged engine container), pulls the
@@ -29,7 +30,10 @@ func (s *Service) BuildQCOW2(jobID string, spec QCOW2Spec) {
 	if spec.TargetArch == "" {
 		spec.TargetArch = "x86_64"
 	}
-	outDir, err := os.MkdirTemp("", "supernova-qcow2-"+jobID+"-")
+	if spec.RootFS == "" {
+		spec.RootFS = "ext4"
+	}
+	outDir, err := os.MkdirTemp(workDir(), "supernova-qcow2-"+jobID+"-")
 	if err != nil {
 		s.fail(jobID, log, err)
 		return
@@ -38,7 +42,7 @@ func (s *Service) BuildQCOW2(jobID string, spec QCOW2Spec) {
 
 	// bootc-image-builder needs a type-specific config; default empty config
 	// uses image defaults.
-	cfgDir, err := os.MkdirTemp("", "supernova-cfg-")
+	cfgDir, err := os.MkdirTemp(workDir(), "supernova-cfg-")
 	if err != nil {
 		s.fail(jobID, log, err)
 		return
@@ -49,16 +53,37 @@ func (s *Service) BuildQCOW2(jobID string, spec QCOW2Spec) {
 		return
 	}
 
+	// bootc-image-builder only reads the source image from the host's
+	// containers-storage, which a docker engine never fills, so pull it there
+	// first with the podman shipped inside the builder image.
+	storage := []string{
+		"run", "--rm",
+		"--privileged",
+		"--security-opt", "label=type:unconfined_t",
+		"--network", "host",
+		"-v", containersStorage + ":" + containersStorage,
+		"--entrypoint", "podman",
+		s.qcow2BuilderImage,
+	}
+	log.WriteString("==> pull " + spec.ImageRef + " into containers-storage\n")
+	if err := s.engine.Run(log, append(storage, "pull", "--tls-verify=false", spec.ImageRef)...); err != nil {
+		s.fail(jobID, log, fmt.Errorf("pull into containers-storage: %w", err))
+		return
+	}
+	defer func() { _ = s.engine.Run(log, append(storage, "rmi", spec.ImageRef)...) }()
+
 	args := []string{
 		"run", "--rm",
 		"--privileged",
 		"--security-opt", "label=type:unconfined_t",
+		"-v", containersStorage + ":" + containersStorage,
 		"-v", cfgDir + ":/config:ro",
 		"-v", outDir + ":/output",
 		s.qcow2BuilderImage,
 		spec.ImageRef,
 		"--type", "qcow2",
-		"--arch", spec.TargetArch,
+		"--target-arch", spec.TargetArch,
+		"--rootfs", spec.RootFS,
 	}
 	log.WriteString("==> bootc-image-builder (privileged, may take several minutes)\n")
 	if err := s.engine.Run(log, args...); err != nil {
@@ -111,4 +136,13 @@ func (s *Service) BuildQCOW2(jobID string, spec QCOW2Spec) {
 		j.ArtifactName = artifactName
 		j.ArtifactSum = sum
 	})
+}
+
+const containersStorage = "/var/lib/containers/storage"
+
+// workDir is where build dirs are created. The engine is the host daemon
+// (bind-mounted socket), which resolves -v paths on the host, so in compose
+// this must be a host dir mounted at the same path inside the container.
+func workDir() string {
+	return os.Getenv("SUPERNOVA_WORK_DIR")
 }
