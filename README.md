@@ -30,6 +30,7 @@ read digest → cosign sign`. Signing is skipped (with a log note) when
 | `COSIGN_KEY` | *(unset)* | path to cosign private key; unset ⇒ signing disabled |
 | `SUPERNOVA_BUILDER_IMAGE` | `quay.io/centos-bootc/bootc-image-builder:latest` | image used for qcow2 builds |
 | `SUPERNOVA_ENGINE` | *(unset)* | force engine binary (`docker`/`podman`); default autodetect |
+| `SUPERNOVA_WORK_DIR` | system temp | where qcow2 build dirs are created; under compose it must be a host dir mounted at the **same path** (`/var/tmp/supernova`), because the host daemon resolves `-v` paths on the host |
 
 The engine talks to the registry through the **host-mapped** port
 (`localhost:5001`) because the daemon lives outside the compose network;
@@ -52,3 +53,16 @@ curl -s http://supernova:8090/jobs/a1b2c3... | jq '{status,digest,imageRef}'
 container (needs KVM-capable host) and PUTs the resulting disk to
 Singularity-files with a computed `sha256:` checksum. This path is exercised
 by the E2 substrate setup (wormhole libvirt backend imports these disks).
+
+```bash
+curl -s -X POST localhost:8090/build/qcow2 -H 'Content-Type: application/json' \
+  -d '{"name":"edge-base-v3.10","imageRef":"192.168.122.1:5001/os/edge-base:v3.10"}'
+```
+
+Spec fields: `name` (artifact base name), `imageRef` (pullable by the engine;
+use the node-visible ref so booted nodes report a resolvable image),
+`targetArch` (default `x86_64`), `rootfs` (default `ext4`; fedora-bootc
+declares none). bootc-image-builder reads the source image only from the
+host's containers-storage, so Supernova first pulls it there with the podman
+inside the builder image (`--network host`, `--tls-verify=false`) and removes
+it afterwards.
