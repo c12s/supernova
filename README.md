@@ -6,6 +6,20 @@ decision **D6**). CPU-heavy and independently scalable: when Supernova is
 down, running fleets keep updating from existing images — only *new* builds
 are blocked.
 
+## Role in c12s
+
+| Pipeline | Flow |
+|---|---|
+| OS image build | operator → `POST /build` → engine build + push to Singularity (Zot) → cosign sign → digest returned; the digest is what `cockpit image update --digest` pins |
+| Disk provisioning | operator → `POST /build/qcow2` → bootc-image-builder → qcow2 PUT to the artifact server → wormhole / the VM reconciler download it |
+| Experiments | `tools/experiments/common.sh` `build_image <tag> <version>` wraps `POST /build` |
+
+It runs in the `tools/docker-compose.yml` stack as the `supernova`
+container, with the **host docker socket mounted** (the build engine lives
+on the host daemon) and is published only on `127.0.0.1:${SUPERNOVA_HOST_PORT}`
+— privileged builds via the host socket must never be reachable from the LAN
+(review S3).
+
 ## API
 
 | Method | Path | Body | Result |
@@ -37,6 +51,17 @@ The engine talks to the registry through the **host-mapped** port
 nodes and Star use the in-network name (`singularity:5000`). Supernova
 returns the node-visible ref, never the engine address.
 
+## Build and run
+
+```bash
+go build ./... && go test ./...   # builds; no tests exist
+go run ./cmd/supernova            # needs a container engine (podman/docker) on PATH
+```
+
+In the lab it runs from the compose stack (see above). Run directly on a
+host with podman/docker: point `SUPERNOVA_WORK_DIR` at a real directory and
+`SUPERNOVA_ENGINE_REGISTRY` at the registry address that host can reach.
+
 ## Example
 
 ```bash
@@ -66,3 +91,43 @@ declares none). bootc-image-builder reads the source image only from the
 host's containers-storage, so Supernova first pulls it there with the podman
 inside the builder image (`--network host`, `--tls-verify=false`) and removes
 it afterwards.
+
+## Status
+
+Stable for the lab build workflows: every `edge-base` tag and every
+provisioning disk was produced through this service. Not production-shaped
+as deployed (see auth note below).
+
+## Bugs, disabled and unfinished features
+
+### Confirmed bugs
+
+None known that block the current flows. The build paths have been exercised
+end to end (image builds for every `edge-base` tag, qcow2 disks for the lab
+fleet).
+
+### Disabled / unfinished features
+
+- **No authentication on the API** — acceptable only because the port is
+  bound to `127.0.0.1` in the compose deployment (review S3, lab fix);
+  exposing it elsewhere would hand out root on the host via the docker
+  socket. Auth is listed as open work for real deployments.
+- **Job history is in-memory only** (`internal/builder/job.go`): a
+  Supernova restart loses all job records; the built images/artifacts
+  themselves survive in Singularity.
+- **No tests** (`go test ./...` → no test files).
+- **Cosign signing is skipped when `COSIGN_KEY` is unset** (the lab
+  default) — images are digest-verifiable only; see DEV-7 for the deferred
+  key-distribution work.
+- **qcow2 builds depend on host path parity** (`SUPERNOVA_WORK_DIR` must
+  exist at the same path on host and in the container) and on the host
+  docker socket — compose-specific coupling that will break under other
+  runtimes without adapting.
+
+### PoC boundaries (by design, not bugs)
+
+- Builds are synchronous at the engine level but asynchronous to the
+  caller (`jobId` + polling); there is no queue, retry, or cancellation.
+- The engine registry address is the host-mapped one; the ref returned to
+  callers is the node-visible one. Mixing them up is the most common
+  configuration error (documented above).
