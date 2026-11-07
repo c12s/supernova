@@ -1,8 +1,9 @@
 FROM golang:1.23-alpine AS build
 WORKDIR /src
-COPY supernova/go.mod ./
+COPY supernova/go.mod supernova/go.sum ./
 COPY supernova/cmd ./cmd
 COPY supernova/internal ./internal
+COPY supernova/pkg ./pkg
 RUN CGO_ENABLED=0 go build -o /supernova ./cmd/supernova
 
 FROM alpine:3.20

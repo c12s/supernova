@@ -10,15 +10,17 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
 // ImageSpec describes one OCI image build request.
 type ImageSpec struct {
-	Name          string `json:"name"`            // repo path under the registry, e.g. "os/edge-base"
-	Tag           string `json:"tag"`             // e.g. "v1.0"
-	Containerfile string `json:"containerfile"`   // file name inside the context, default "Containerfile"
-	Registry      string `json:"registry"`        // node-visible registry, e.g. "singularity:5000"
+	Name          string            `json:"name"`          // repo path under the registry, e.g. "os/edge-base"
+	Tag           string            `json:"tag"`           // e.g. "v1.0"
+	Containerfile string            `json:"containerfile"` // file name inside the context, default "Containerfile"
+	Registry      string            `json:"registry"`      // node-visible registry, e.g. "singularity:5000"
+	BuildArgs     map[string]string `json:"buildArgs"`     // extra --build-arg values (OS_VERSION, BASE, ...)
 }
 
 // BuildImage runs the full pipeline for one image job:
@@ -50,8 +52,20 @@ func (s *Service) BuildImage(jobID string, spec ImageSpec, contextTar io.Reader)
 	engineTag := fmt.Sprintf("%s/%s:%s", s.engineRegistry, spec.Name, spec.Tag)
 	nodeTag := fmt.Sprintf("%s/%s:%s", spec.Registry, spec.Name, spec.Tag)
 
-	log.WriteString(fmt.Sprintf("==> %s build -f %s -t %s .\n", filepath.Base(s.engine.Name()), spec.Containerfile, engineTag))
-	if err := s.engine.Run(log, "build", "-f", spec.Containerfile, "-t", engineTag, "."); err != nil {
+	buildArgs := make([]string, 0, len(spec.BuildArgs)*2)
+	keys := make([]string, 0, len(spec.BuildArgs))
+	for k := range spec.BuildArgs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys) // deterministic command line and build cache key
+	for _, k := range keys {
+		buildArgs = append(buildArgs, "--build-arg", k+"="+spec.BuildArgs[k])
+	}
+	args := append([]string{"build", "-f", spec.Containerfile}, buildArgs...)
+	args = append(args, "-t", engineTag, ".")
+
+	log.WriteString(fmt.Sprintf("==> %s %s\n", filepath.Base(s.engine.Name()), strings.Join(args, " ")))
+	if err := s.engine.Run(log, args...); err != nil {
 		s.fail(jobID, log, fmt.Errorf("build: %w", err))
 		return
 	}

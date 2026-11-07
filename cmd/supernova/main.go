@@ -2,15 +2,26 @@ package main
 
 import (
 	"log"
-	"net/http"
+	"net"
 	"os"
 
 	"github.com/c12s/supernova/internal/builder"
+	api "github.com/c12s/supernova/pkg/api"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/reflection"
 )
 
 // Supernova is the control plane's build service: it turns uploaded build
 // contexts into signed OCI images in Singularity, and bootc OS images into
 // qcow2 artifacts for provisioning (plan Phase 3.2, decision D6).
+//
+// The service speaks gRPC only. lunar-gateway discovers it through server
+// reflection and exposes BuildImage/BuildQCOW2/GetJob/ListJobs as the
+// authenticated HTTP routes under /apis/core/v1.
+
+const maxMsgSize = 64 << 20 // the edge-base build context is ~23 MB raw
 
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {
@@ -31,16 +42,20 @@ func main() {
 		log.Fatalf("init builder: %v", err)
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /build", svc.ImageBuildRequest)
-	mux.HandleFunc("POST /build/qcow2", svc.QCOW2BuildRequest)
-	mux.HandleFunc("GET /jobs/{id}", svc.JobStatus)
-	mux.HandleFunc("GET /jobs", svc.Jobs)
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
-	})
+	lis, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Fatalf("listen %s: %v", addr, err)
+	}
 
-	log.Printf("supernova listening on %s (engine registry %s)", addr, engineRegistry)
-	log.Fatal(http.ListenAndServe(addr, mux))
+	server := grpc.NewServer(
+		grpc.MaxRecvMsgSize(maxMsgSize),
+		grpc.MaxSendMsgSize(maxMsgSize),
+		grpc.UnaryInterceptor(builder.AuthInterceptor),
+	)
+	api.RegisterSupernovaServer(server, builder.NewGRPCServer(svc))
+	healthpb.RegisterHealthServer(server, health.NewServer())
+	reflection.Register(server)
+
+	log.Printf("supernova gRPC listening on %s (engine registry %s)", addr, engineRegistry)
+	log.Fatal(server.Serve(lis))
 }

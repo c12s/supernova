@@ -69,6 +69,31 @@ func (s *Store) Get(id string) (*Job, error) {
 	return j, nil
 }
 
+// Snapshot returns a copy of the job so callers never read fields while the
+// build goroutine is updating them.
+func (s *Store) Snapshot(id string) (*Job, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	j, ok := s.jobs[id]
+	if !ok {
+		return nil, fmt.Errorf("job %s not found", id)
+	}
+	c := *j
+	return &c, nil
+}
+
+// List returns copies of all jobs, for the ListJobs RPC.
+func (s *Store) List() []*Job {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]*Job, 0, len(s.jobs))
+	for _, j := range s.jobs {
+		c := *j
+		out = append(out, &c)
+	}
+	return out
+}
+
 // Update mutates a job under the store lock and stamps UpdatedAt.
 func (s *Store) Update(id string, fn func(*Job)) {
 	s.mu.Lock()
