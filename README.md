@@ -64,7 +64,7 @@ token. The loopback port itself remains unauthenticated for local debugging
 | Var | Default | Meaning |
 |---|---|---|
 | `SUPERNOVA_PORT` | `8090` | gRPC listen port |
-| `SUPERNOVA_ENGINE_REGISTRY` | `localhost:5001` | registry address **as seen by the engine** (host port mapping) |
+| `SUPERNOVA_ENGINE_REGISTRY` | `localhost:5001` | registry address the **push** (skopeo, runs in the Supernova container) reaches; under compose it is `singularity:5000` |
 | `SUPERNOVA_ARTIFACTS_URL` | `http://singularity-files:8080` | file server for qcow2 uploads |
 | `COSIGN_KEY` | *(unset)* | path to cosign private key; unset ⇒ signing disabled |
 | `SUPERNOVA_BUILDER_IMAGE` | `quay.io/centos-bootc/bootc-image-builder:latest` | image used for qcow2 builds |
@@ -72,10 +72,13 @@ token. The loopback port itself remains unauthenticated for local debugging
 | `SUPERNOVA_WORK_DIR` | system temp | where qcow2 build dirs are created; under compose it must be a host dir mounted at the **same path** (`/var/tmp/supernova`), because the host daemon resolves `-v` paths on the host |
 | `SECRET_KEY` | *(required)* | shared JWT key; without it every build is rejected (no authorizer) |
 
-The engine talks to the registry through the **host-mapped** port
-(`localhost:5001`) because the daemon lives outside the compose network;
-nodes and Star use the in-network name (`singularity:5000`). Supernova
-returns the node-visible ref, never the engine address.
+The engine runs on the host (the compose stack mounts the host docker socket),
+so `docker build` tags the image with the address the **push** reaches from
+inside the Supernova container: `singularity:5000` in the compose network, or
+`localhost:5001` when running directly on the host. Nodes and Star pull the
+node-visible ref (`192.168.122.1:5001/...`); Supernova returns that, never the
+engine address. The build does not contact the registry (the daemon only
+tags); the push and the digest read do.
 
 ## Build and run
 
@@ -94,7 +97,8 @@ Through the operator CLI (recommended):
 
 ```bash
 cockpit image build --name os/edge-base --tag v3.18 \
-  --context tools/bootc --build-arg OS_VERSION=v3.18 --wait
+  --context tools/bootc --containerfile Containerfile.bootc \
+  --build-arg OS_VERSION=v3.18 --wait
 # prints the digest; next: cockpit image update --node-id <id> --image-ref ... --digest ...
 ```
 

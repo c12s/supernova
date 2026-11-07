@@ -28,9 +28,19 @@ func NewEngine() (*Engine, error) {
 	return nil, fmt.Errorf("no container engine found (tried SUPERNOVA_ENGINE, podman, docker)")
 }
 
-// Run executes an engine command, streaming combined output into the sink.
+// Run executes an engine command in the current directory, streaming combined
+// output into the sink.
 func (e *Engine) Run(sink *strings.Builder, args ...string) error {
+	return e.RunIn("", sink, args...)
+}
+
+// RunIn executes an engine command in dir, streaming combined output into the
+// sink. The image build needs this: the context is extracted to a temp dir and
+// the build must run with that dir as the working directory so `-f
+// Containerfile` and `.` resolve to the extracted files.
+func (e *Engine) RunIn(dir string, sink *strings.Builder, args ...string) error {
 	cmd := exec.Command(e.bin, args...)
+	cmd.Dir = dir
 	cmd.Stdout = sink
 	cmd.Stderr = sink
 	return cmd.Run()

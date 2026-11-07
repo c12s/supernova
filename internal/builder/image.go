@@ -65,7 +65,7 @@ func (s *Service) BuildImage(jobID string, spec ImageSpec, contextTar io.Reader)
 	args = append(args, "-t", engineTag, ".")
 
 	log.WriteString(fmt.Sprintf("==> %s %s\n", filepath.Base(s.engine.Name()), strings.Join(args, " ")))
-	if err := s.engine.Run(log, args...); err != nil {
+	if err := s.engine.RunIn(work, log, args...); err != nil {
 		s.fail(jobID, log, fmt.Errorf("build: %w", err))
 		return
 	}
