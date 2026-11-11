@@ -11,11 +11,12 @@ import (
 )
 
 // ListImages reads the registry and the artifact server. It is the
-// read-only view of what is available: the image refs the registry holds and
-// the qcow2 artifacts the artifact server serves. The engine-visible registry
-// is used for the catalog; the artifact server is reachable from this
-// container.
-func (s *Service) ListImages() ([]string, []Artifact, error) {
+// read-only view of what is available: the image refs the registry holds,
+// each with its manifest digest (the value `image update --digest` takes),
+// and the qcow2 artifacts the artifact server serves. The engine-visible
+// registry is used for the catalog; the artifact server is reachable from
+// this container.
+func (s *Service) ListImages() ([]Image, []Artifact, error) {
 	images, err := s.listImages()
 	if err != nil {
 		return nil, nil, err
@@ -27,20 +28,26 @@ func (s *Service) ListImages() ([]string, []Artifact, error) {
 	return images, artifacts, nil
 }
 
+// Image is one tag in the registry with the digest it currently points to.
+type Image struct {
+	Ref    string
+	Digest string
+}
+
 // Artifact is one qcow2 on the artifact server, with its sha256.
 type Artifact struct {
 	Name     string
 	Checksum string
 }
 
-func (s *Service) listImages() ([]string, error) {
+func (s *Service) listImages() ([]Image, error) {
 	var catalog struct {
 		Repositories []string `json:"repositories"`
 	}
 	if err := getJSON("http://"+s.engineRegistry+"/v2/_catalog", &catalog); err != nil {
 		return nil, err
 	}
-	var out []string
+	var out []Image
 	for _, repo := range catalog.Repositories {
 		var tags struct {
 			Tags []string `json:"tags"`
@@ -49,11 +56,46 @@ func (s *Service) listImages() ([]string, error) {
 			return nil, err
 		}
 		for _, tag := range tags.Tags {
-			out = append(out, repo+":"+tag)
+			digest, err := s.manifestDigest(repo, tag)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, Image{Ref: repo + ":" + tag, Digest: digest})
 		}
 	}
-	sort.Strings(out)
+	sort.Slice(out, func(i, j int) bool { return out[i].Ref < out[j].Ref })
 	return out, nil
+}
+
+// manifestDigest asks the registry which manifest a tag points to. The
+// digest comes from the Docker-Content-Digest header of a HEAD request; the
+// Accept header must name the OCI manifest type, or Zot answers 404 for
+// images pushed as OCI.
+func (s *Service) manifestDigest(repo, tag string) (string, error) {
+	url := "http://" + s.engineRegistry + "/v2/" + repo + "/manifests/" + tag
+	req, err := http.NewRequest(http.MethodHead, url, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", strings.Join([]string{
+		"application/vnd.oci.image.manifest.v1+json",
+		"application/vnd.oci.image.index.v1+json",
+		"application/vnd.docker.distribution.manifest.v2+json",
+	}, ", "))
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("HEAD %s: %s", url, resp.Status)
+	}
+	digest := resp.Header.Get("Docker-Content-Digest")
+	if digest == "" {
+		return "", fmt.Errorf("HEAD %s: no Docker-Content-Digest header", url)
+	}
+	return digest, nil
 }
 
 func (s *Service) listArtifacts() ([]Artifact, error) {

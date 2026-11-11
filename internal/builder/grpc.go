@@ -132,7 +132,10 @@ func (g *GRPCServer) ListImages(ctx context.Context, req *api.ListImagesReq) (*a
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "list images: %v", err)
 	}
-	out := &api.ImageList{Images: images}
+	out := &api.ImageList{}
+	for _, img := range images {
+		out.Images = append(out.Images, &api.Image{Ref: img.Ref, Digest: img.Digest})
+	}
 	for _, a := range artifacts {
 		out.Artifacts = append(out.Artifacts, &api.Artifact{Name: a.Name, Checksum: a.Checksum})
 	}

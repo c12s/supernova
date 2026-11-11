@@ -92,11 +92,18 @@ message JobList {
 message ListImagesReq {}
 
 // ImageList is the read-only view of the registry and the artifact server.
-// Image refs are the engine-visible form (repo:tag); the artifact checksum is
-// the qcow2's sha256, as served by the artifact server.
+// Image refs are the repo:tag form; the digest is the manifest digest the tag
+// points to now. The artifact checksum is the qcow2's sha256, as served by the
+// artifact server.
 message ImageList {
-  repeated string images = 1;
+  reserved 1; // was: repeated string images (refs without digests)
   repeated Artifact artifacts = 2;
+  repeated Image images = 3;
+}
+
+message Image {
+  string ref = 1;
+  string digest = 2;
 }
 
 message Artifact {
