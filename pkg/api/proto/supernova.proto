@@ -14,6 +14,7 @@ option go_package = "github.com/c12s/supernova/pkg/api";
 //	BuildQCOW2   POST /builds/qcow2
 //	GetJob       GET  /builds/{id}
 //	ListJobs     GET  /builds
+//	ListImages   GET  /images
 //
 // BuildImage carries the build context as a tar.gz in a single message. The
 // gateway's grpcurl JSON parser accepts it base64-encoded, so the route is a
@@ -24,6 +25,7 @@ service Supernova {
   rpc BuildQCOW2(QCOW2Req) returns (BuildJob);
   rpc GetJob(GetJobReq) returns (Job);
   rpc ListJobs(ListJobsReq) returns (JobList);
+  rpc ListImages(ListImagesReq) returns (ImageList);
 }
 
 message BuildImageReq {
@@ -85,4 +87,19 @@ message ListJobsReq {}
 
 message JobList {
   repeated Job jobs = 1;
+}
+
+message ListImagesReq {}
+
+// ImageList is the read-only view of the registry and the artifact server.
+// Image refs are the engine-visible form (repo:tag); the artifact checksum is
+// the qcow2's sha256, as served by the artifact server.
+message ImageList {
+  repeated string images = 1;
+  repeated Artifact artifacts = 2;
+}
+
+message Artifact {
+  string name = 1;
+  string checksum = 2;
 }

@@ -124,6 +124,21 @@ func (g *GRPCServer) ListJobs(ctx context.Context, req *api.ListJobsReq) (*api.J
 	return &api.JobList{Jobs: out}, nil
 }
 
+// ListImages reads the registry and the artifact server. It is read-only and
+// intentionally does not require a permission: the operator's local view of
+// what the control plane already has should not be gated behind a policy.
+func (g *GRPCServer) ListImages(ctx context.Context, req *api.ListImagesReq) (*api.ImageList, error) {
+	images, artifacts, err := g.svc.ListImages()
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "list images: %v", err)
+	}
+	out := &api.ImageList{Images: images}
+	for _, a := range artifacts {
+		out.Artifacts = append(out.Artifacts, &api.Artifact{Name: a.Name, Checksum: a.Checksum})
+	}
+	return out, nil
+}
+
 func toProtoJob(j *Job) *api.Job {
 	return &api.Job{
 		Id:           j.ID,

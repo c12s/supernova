@@ -26,6 +26,7 @@ type SupernovaClient interface {
 	BuildQCOW2(ctx context.Context, in *QCOW2Req, opts ...grpc.CallOption) (*BuildJob, error)
 	GetJob(ctx context.Context, in *GetJobReq, opts ...grpc.CallOption) (*Job, error)
 	ListJobs(ctx context.Context, in *ListJobsReq, opts ...grpc.CallOption) (*JobList, error)
+	ListImages(ctx context.Context, in *ListImagesReq, opts ...grpc.CallOption) (*ImageList, error)
 }
 
 type supernovaClient struct {
@@ -72,6 +73,15 @@ func (c *supernovaClient) ListJobs(ctx context.Context, in *ListJobsReq, opts ..
 	return out, nil
 }
 
+func (c *supernovaClient) ListImages(ctx context.Context, in *ListImagesReq, opts ...grpc.CallOption) (*ImageList, error) {
+	out := new(ImageList)
+	err := c.cc.Invoke(ctx, "/supernova.Supernova/ListImages", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SupernovaServer is the server API for Supernova service.
 // All implementations must embed UnimplementedSupernovaServer
 // for forward compatibility
@@ -80,6 +90,7 @@ type SupernovaServer interface {
 	BuildQCOW2(context.Context, *QCOW2Req) (*BuildJob, error)
 	GetJob(context.Context, *GetJobReq) (*Job, error)
 	ListJobs(context.Context, *ListJobsReq) (*JobList, error)
+	ListImages(context.Context, *ListImagesReq) (*ImageList, error)
 	mustEmbedUnimplementedSupernovaServer()
 }
 
@@ -98,6 +109,9 @@ func (UnimplementedSupernovaServer) GetJob(context.Context, *GetJobReq) (*Job, e
 }
 func (UnimplementedSupernovaServer) ListJobs(context.Context, *ListJobsReq) (*JobList, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListJobs not implemented")
+}
+func (UnimplementedSupernovaServer) ListImages(context.Context, *ListImagesReq) (*ImageList, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListImages not implemented")
 }
 func (UnimplementedSupernovaServer) mustEmbedUnimplementedSupernovaServer() {}
 
@@ -184,6 +198,24 @@ func _Supernova_ListJobs_Handler(srv interface{}, ctx context.Context, dec func(
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Supernova_ListImages_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListImagesReq)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SupernovaServer).ListImages(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/supernova.Supernova/ListImages",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SupernovaServer).ListImages(ctx, req.(*ListImagesReq))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Supernova_ServiceDesc is the grpc.ServiceDesc for Supernova service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -206,6 +238,10 @@ var Supernova_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListJobs",
 			Handler:    _Supernova_ListJobs_Handler,
+		},
+		{
+			MethodName: "ListImages",
+			Handler:    _Supernova_ListImages_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
