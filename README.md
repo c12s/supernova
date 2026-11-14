@@ -32,6 +32,7 @@ RPCs as authenticated HTTP+JSON routes:
 | `BuildQCOW2` | `POST /apis/core/v1/builds/qcow2` | JSON `QCOW2Spec` | `{"jobId":"..."}` |
 | `GetJob` | `GET /apis/core/v1/builds/{id}` | — | full `Job` (status, digest, log tail) |
 | `ListJobs` | `GET /apis/core/v1/builds` | — | all jobs |
+| `ListImages` | `GET /apis/core/v1/images` | — | registry tags with their manifest digests (`images[]{ref, digest}`) and qcow2 artifacts with checksums — what `cockpit image list` and `image apply` (tag → digest) read |
 
 `BuildImage` carries the build context as a tar.gz in one unary message. The
 gateway's grpcurl JSON parser accepts it base64-encoded. The server and the
@@ -55,8 +56,8 @@ permission:    { condition: { expression: "" }, kind: "ALLOW", name: "image.buil
 subjectScope:  { id: "<username>", kind: "user" }
 ```
 
-Re-login after creating the policy so the new permission is baked into the
-token. The loopback port itself remains unauthenticated for local debugging
+No re-login is needed after creating the policy: Apollo mints the JWT per
+request with the user's current permissions. The loopback port itself remains unauthenticated for local debugging
 (review S3); the gateway route is the authenticated path.
 
 ## Configuration (env)
@@ -96,9 +97,9 @@ host with podman/docker: point `SUPERNOVA_WORK_DIR` at a real directory and
 Through the operator CLI (recommended):
 
 ```bash
-cockpit image build --name os/edge-base --tag v3.18 \
+cockpit image build --name os/edge-base --tag v4.0 \
   --context tools/bootc --containerfile Containerfile.bootc \
-  --build-arg OS_VERSION=v3.18 --wait
+  --build-arg OS_VERSION=v4.0 --wait
 # prints the digest; next: cockpit image update --node-id <id> --image-ref ... --digest ...
 ```
 
@@ -107,7 +108,7 @@ Directly against the gRPC port with grpcurl (local debugging only):
 ```bash
 tar -C tools/bootc -czf ctx.tgz .
 grpcurl -plaintext -H 'authz-token: <jwt>' \
-  -d "{\"spec\":{\"name\":\"os/edge-base\",\"tag\":\"v3.18\",\"registry\":\"192.168.122.1:5001\",\"buildArgs\":{\"OS_VERSION\":\"v3.18\"}},\"context\":\"$(base64 -w0 ctx.tgz)\"}" \
+  -d "{\"spec\":{\"name\":\"os/edge-base\",\"tag\":\"v4.0\",\"registry\":\"192.168.122.1:5001\",\"buildArgs\":{\"OS_VERSION\":\"v4.0\"}},\"context\":\"$(base64 -w0 ctx.tgz)\"}" \
   localhost:8090 supernova.Supernova/BuildImage
 # -> {"jobId":"a1b2c3..."}
 grpcurl -plaintext -H 'authz-token: <jwt>' -d '{"id":"a1b2c3..."}' \
@@ -127,8 +128,8 @@ with a computed `sha256:` checksum. This path is exercised by the E2
 substrate setup (wormhole libvirt backend imports these disks).
 
 ```bash
-cockpit image build qcow2 --name edge-base-v3.18 \
-  --image-ref 192.168.122.1:5001/os/edge-base:v3.18 --wait
+cockpit image build qcow2 --name edge-base-v4.0 \
+  --image-ref 192.168.122.1:5001/os/edge-base:v4.0 --wait
 ```
 
 Spec fields: `name` (artifact base name), `imageRef` (pullable by the engine;
@@ -142,7 +143,9 @@ it afterwards.
 ## Status
 
 Stable for the lab build workflows: every `edge-base` tag and every
-provisioning disk was produced through this service. Not production-shaped
+provisioning disk was produced through this service. `tools/image-cache.sh`
+saves built images and disks and restores them byte for byte (same digests)
+without rebuilding. Not production-shaped
 as deployed (see auth note below).
 
 ## Bugs, disabled and unfinished features
