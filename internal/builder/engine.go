@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// Engine abstracts the local container engine used for builds. In the lab
+// Engine abstracts the local container engine used for builds. In the
 // compose stack the daemon socket is bind-mounted, so `docker` is the
 // default; `podman` works identically when Supernova runs on a host that
 // has it (both take the same build/push/inspect surface we use).

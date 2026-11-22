@@ -15,7 +15,7 @@ import (
 
 // Supernova is the control plane's build service: it turns uploaded build
 // contexts into signed OCI images in Singularity, and bootc OS images into
-// qcow2 artifacts for provisioning (plan Phase 3.2, decision D6).
+// qcow2 artifacts for provisioning.
 //
 // The service speaks gRPC only. lunar-gateway discovers it through server
 // reflection and exposes BuildImage/BuildQCOW2/GetJob/ListJobs as the
