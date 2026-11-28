@@ -1,1 +1,137 @@
-# supernova
+# supernova — c12s build service
+
+Turns operator build contexts into **signed OCI images** in Singularity, and
+bootc OS images into **qcow2 artifacts** for provisioning. CPU-heavy and independently scalable: when Supernova is
+down, running fleets keep updating from existing images — only *new* builds
+are blocked.
+
+## Role in c12s
+
+| Pipeline | Flow |
+|---|---|
+| OS image build | operator → `cockpit image build` → gateway `BuildImage` → engine build + push to Singularity (Zot) → cosign sign → digest returned; the digest is what `cockpit image update --digest` pins |
+| Disk provisioning | operator → `cockpit image build qcow2` → gateway `BuildQCOW2` → bootc-image-builder → qcow2 PUT to the artifact server → wormhole / the VM reconciler download it |
+
+It runs in the `tools/docker-compose.yml` stack as the `supernova`
+container, with the **host docker socket mounted** (the build engine lives
+on the host daemon) and is published only on `127.0.0.1:${SUPERNOVA_HOST_PORT}`
+— privileged builds via the host socket must never be reachable from the LAN. The gateway reaches it in-network as `supernova:8090`.
+
+## API
+
+Supernova speaks **gRPC only**. The gateway discovers it through server
+reflection (the same mechanism as every other c12s backend) and exposes the
+RPCs as authenticated HTTP+JSON routes:
+
+| RPC | Gateway route | Body | Result |
+|---|---|---|---|
+| `BuildImage` | `POST /apis/core/v1/builds` | `{"spec":{...},"context":"<base64 tar.gz>"}` | `{"jobId":"..."}` |
+| `BuildQCOW2` | `POST /apis/core/v1/builds/qcow2` | JSON `QCOW2Spec` | `{"jobId":"..."}` |
+| `GetJob` | `GET /apis/core/v1/builds/{id}` | — | full `Job` (status, digest, log tail) |
+| `ListJobs` | `GET /apis/core/v1/builds` | — | all jobs |
+| `ListImages` | `GET /apis/core/v1/images` | — | registry tags with their manifest digests (`images[]{ref, digest}`) and qcow2 artifacts with checksums — what `cockpit image list` and `image apply` (tag → digest) read |
+
+`BuildImage` carries the build context as a tar.gz in one unary message. The
+gateway's grpcurl JSON parser accepts it base64-encoded. The server and the
+gateway's client both raise the gRPC message limit to 64 MiB (the edge-base
+context is ~23 MB raw, so ~10 MB compressed).
+
+Image pipeline per job: `extract context → engine build → engine push →
+read digest → cosign sign`. Signing is skipped (with a log note) when
+`COSIGN_KEY` is unset — Star's verification degrades accordingly.
+
+**Authorization.** The gateway verifies the vault token with Apollo and
+forwards the signed JWT as the `authz-token` gRPC metadata. Supernova parses
+the JWT with the shared `SECRET_KEY` and requires
+`image.build|image|<image name>` in the `permissions` claim. The object is the
+repo path (`os/edge-base`), so an operator policy grants the build permission
+on the image, not on a node:
+
+```yaml
+objectScope:   { id: "os/edge-base", kind: "image" }
+permission:    { condition: { expression: "" }, kind: "ALLOW", name: "image.build" }
+subjectScope:  { id: "<username>", kind: "user" }
+```
+
+No re-login is needed after creating the policy: Apollo mints the JWT per
+request with the user's current permissions. The loopback port itself remains unauthenticated for local debugging; the gateway route is the authenticated path.
+
+## Configuration (env)
+
+| Var | Default | Meaning |
+|---|---|---|
+| `SUPERNOVA_PORT` | `8090` | gRPC listen port |
+| `SUPERNOVA_ENGINE_REGISTRY` | `localhost:5001` | registry address the **push** (skopeo, runs in the Supernova container) reaches; under compose it is `singularity:5000` |
+| `SUPERNOVA_ARTIFACTS_URL` | `http://singularity-files:8080` | file server for qcow2 uploads |
+| `COSIGN_KEY` | *(unset)* | path to cosign private key; unset ⇒ signing disabled |
+| `SUPERNOVA_BUILDER_IMAGE` | `quay.io/centos-bootc/bootc-image-builder:latest` | image used for qcow2 builds |
+| `SUPERNOVA_ENGINE` | *(unset)* | force engine binary (`docker`/`podman`); default autodetect |
+| `SUPERNOVA_WORK_DIR` | system temp | where qcow2 build dirs are created; under compose it must be a host dir mounted at the **same path** (`/var/tmp/supernova`), because the host daemon resolves `-v` paths on the host |
+| `SECRET_KEY` | *(required)* | shared JWT key; without it every build is rejected (no authorizer) |
+
+The engine runs on the host (the compose stack mounts the host docker socket),
+so `docker build` tags the image with the address the **push** reaches from
+inside the Supernova container: `singularity:5000` in the compose network, or
+`localhost:5001` when running directly on the host. Nodes and Star pull the
+node-visible ref (the registry address the nodes use); Supernova returns that, never the
+engine address. The build does not contact the registry (the daemon only
+tags); the push and the digest read do.
+
+## Build and run
+
+```bash
+go build ./... && go test ./...   # builds; auth and gRPC server tests exist
+go run ./cmd/supernova            # needs a container engine (podman/docker) on PATH
+```
+
+Normally it runs from the compose stack (see above). Run directly on a
+host with podman/docker: point `SUPERNOVA_WORK_DIR` at a real directory and
+`SUPERNOVA_ENGINE_REGISTRY` at the registry address that host can reach.
+
+## Examples
+
+Through the operator CLI (recommended):
+
+```bash
+cockpit image build --name os/edge-base --tag v1.0 \
+  --context tools/bootc --containerfile Containerfile.bootc \
+  --build-arg OS_VERSION=v1.0 --wait
+# prints the digest; next: cockpit image update --node-id <id> --image-ref ... --digest ...
+```
+
+Directly against the gRPC port with grpcurl (local debugging only):
+
+```bash
+tar -C tools/bootc -czf ctx.tgz .
+grpcurl -plaintext -H 'authz-token: <jwt>' \
+  -d "{\"spec\":{\"name\":\"os/edge-base\",\"tag\":\"v1.0\",\"registry\":\"registry.example:5001\",\"buildArgs\":{\"OS_VERSION\":\"v1.0\"}},\"context\":\"$(base64 -w0 ctx.tgz)\"}" \
+  localhost:8090 supernova.Supernova/BuildImage
+# -> {"jobId":"a1b2c3..."}
+grpcurl -plaintext -H 'authz-token: <jwt>' -d '{"id":"a1b2c3..."}' \
+  localhost:8090 supernova.Supernova/GetJob
+```
+
+`BuildImage` spec fields: `name` (repo path), `tag` (default `latest`),
+`containerfile` (default `Containerfile`), `registry` (node-visible ref),
+`buildArgs` (extra `--build-arg` values; the edge-base image needs
+`OS_VERSION`, and `BASE` for a broken/alt build on top of another image).
+
+## qcow2 path
+
+`BuildQCOW2` runs `bootc-image-builder` in a **privileged** engine container
+(needs a KVM-capable host) and PUTs the resulting disk to Singularity-files
+with a computed `sha256:` checksum. Provisioning tools (e.g. wormhole) and
+star's VM reconciler use these disks.
+
+```bash
+cockpit image build qcow2 --name edge-base-v1.0 \
+  --image-ref <registry>/os/edge-base:v1.0 --wait
+```
+
+Spec fields: `name` (artifact base name), `imageRef` (pullable by the engine;
+use the node-visible ref so booted nodes report a resolvable image),
+`targetArch` (default `x86_64`), `rootfs` (default `ext4`; fedora-bootc
+declares none). bootc-image-builder reads the source image only from the
+host's containers-storage, so Supernova first pulls it there with the podman
+inside the builder image (`--network host`, `--tls-verify=false`) and removes
+it afterwards.

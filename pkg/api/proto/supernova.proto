@@ -1,0 +1,112 @@
+syntax = "proto3";
+
+package supernova;
+
+option go_package = "github.com/c12s/supernova/pkg/api";
+
+// Supernova is the control plane's build service. It turns uploaded build
+// contexts into signed OCI images in Singularity and bootc OS images into
+// qcow2 artifacts for provisioning.
+//
+// The gateway exposes these RPCs as HTTP+JSON routes under /apis/core/v1:
+//
+//	BuildImage   POST /builds
+//	BuildQCOW2   POST /builds/qcow2
+//	GetJob       GET  /builds/{id}
+//	ListJobs     GET  /builds
+//	ListImages   GET  /images
+//
+// BuildImage carries the build context as a tar.gz in a single message. The
+// gateway's grpcurl JSON parser accepts it base64-encoded, so the route is a
+// normal unary call. Both the server and the gateway raise the gRPC message
+// limit to 64 MiB for the context (the edge-base context is ~23 MB raw).
+service Supernova {
+  rpc BuildImage(BuildImageReq) returns (BuildJob);
+  rpc BuildQCOW2(QCOW2Req) returns (BuildJob);
+  rpc GetJob(GetJobReq) returns (Job);
+  rpc ListJobs(ListJobsReq) returns (JobList);
+  rpc ListImages(ListImagesReq) returns (ImageList);
+}
+
+message BuildImageReq {
+  ImageSpec spec = 1;
+  // tar.gz of the build context (Containerfile + payloads).
+  bytes context = 2;
+}
+
+message ImageSpec {
+  // repo path under the registry, e.g. "os/edge-base"
+  string name = 1;
+  // image tag, default "latest"
+  string tag = 2;
+  // Containerfile name inside the context, default "Containerfile"
+  string containerfile = 3;
+  // node-visible registry ref, e.g. "192.168.122.1:5001"
+  string registry = 4;
+  // extra --build-arg values (OS_VERSION, BASE, ...)
+  map<string, string> buildArgs = 5;
+}
+
+message QCOW2Req {
+  // artifact base name, e.g. "edge-base-v3.18"
+  string name = 1;
+  // engine-reachable ref of the already-built bootc image
+  string imageRef = 2;
+  // default x86_64
+  string targetArch = 3;
+  // default ext4
+  string rootfs = 4;
+}
+
+message BuildJob {
+  string jobId = 1;
+}
+
+message GetJobReq {
+  string id = 1;
+}
+
+message Job {
+  string id = 1;
+  // "image" or "qcow2"
+  string type = 2;
+  // "pending" | "running" | "succeeded" | "failed"
+  string status = 3;
+  // image jobs: node-visible ref that cockpit image update pins
+  string imageRef = 4;
+  string digest = 5;
+  // qcow2 jobs
+  string artifactName = 6;
+  string artifactSum = 7;
+  string error = 8;
+  // tail of the build output
+  string log = 9;
+}
+
+message ListJobsReq {}
+
+message JobList {
+  repeated Job jobs = 1;
+}
+
+message ListImagesReq {}
+
+// ImageList is the read-only view of the registry and the artifact server.
+// Image refs are the repo:tag form; the digest is the manifest digest the tag
+// points to now. The artifact checksum is the qcow2's sha256, as served by the
+// artifact server.
+message ImageList {
+  reserved 1; // was: repeated string images (refs without digests)
+  repeated Artifact artifacts = 2;
+  repeated Image images = 3;
+}
+
+message Image {
+  string ref = 1;
+  string digest = 2;
+}
+
+message Artifact {
+  string name = 1;
+  string checksum = 2;
+}
